@@ -1,0 +1,80 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+import logging
+
+# 3rd party (PyScard)
+from smartcard.System import readers
+import llsmartcard.apdu as APDU
+
+sys.path.insert(0, "./fuzzer")
+from fuzzer import Fuzzer
+from util import str2hex
+
+parser = argparse.ArgumentParser(description='Fuzzer/command mapper for EMV cards.')
+parser.add_argument('-d', '--debug', action='store_true', dest='debug', help="Run in debug mode")
+parser.add_argument('-r', '--reader', action='store', dest='reader', type=int, help="If multiple readers present, choose the reader to use")
+parser.add_argument('--mc', action='store_const', dest='application', const=APDU.APPLET.MASTERCARD, help='Select Mastercard application before fuzzing')
+parser.add_argument('--gpo', action='store_const', dest='pre_command', const=[0x80, 0xA8, 0x00, 0x00, 0x02, 0x83, 0x00, 0x00], help='Perform GPO before fuzzing')
+parser.add_argument('--init-update', action='store_const', dest='pre_command', const=[0x80, 0x50, 0x00, 0x00, 0x08], help='Perform INIT UPDATE before fuzzing')
+parser.add_argument('--logical-channel', action='store', dest='logical_channel', type=int, default=0)
+parser.add_argument('--target', action='store', dest='target_command', help='Command to perform parameter testing on', nargs='*', type=str2hex)
+parser.add_argument('--target-length', action='store', dest='target_command_length', help='Data length for target command', type=int, default=0)
+parser.add_argument('--p1', action='store', dest='p1', type=str2hex, default=0x00)
+parser.add_argument('--p2', action='store', dest='p2', type=str2hex, default=0x00)
+parser.add_argument('--payload', action='store', dest='payload', nargs='*', type=str2hex)
+
+args = vars(parser.parse_args())
+
+if args['debug']:
+  logging.basicConfig(level=logging.DEBUG)
+
+def select_reader():
+  # get readers
+  reader_list = readers()
+
+  # Let the user the select a reader
+  if len(reader_list) > 1:
+    if args['reader'] != None:
+      reader = reader_list[args['reader']]
+    else:
+      print "Please select a reader"
+      idx = 0
+      for r in reader_list:
+        print "  %d - %s" % (idx, r)
+        idx += 1
+
+      reader_idx = -1
+      while reader_idx < 0 or reader_idx > len(reader_list)-1:
+        reader_idx = int(raw_input("Reader[%d-%d]: " % (0, len(reader_list)-1)))
+
+      reader = reader_list[reader_idx]
+  else:
+    reader = reader_list[0]
+
+  print "Using: %s" % reader
+  return reader
+
+if __name__ == "__main__":
+  fuzzer = Fuzzer(
+                  select_reader(),
+                  args['logical_channel']
+                  )
+
+  if args['application']:
+    fuzzer.select(args['application'])
+
+  if args['pre_command']:
+    fuzzer.send_channel_aware_precommand(args['pre_command'])
+
+  if args['target_command']:
+    if args['payload']:
+      fuzzer.mutation_fuzz(args['target_command'], args['p1'], args['p2'], args['payload'], args['pre_command'])
+    elif args['target_command_length'] or args['p1'] or args['p2']:
+      fuzzer.fuzz_payload(args['target_command'], args['p1'], args['p2'], args['target_command_length'])
+    else:
+      fuzzer.fuzz_params(args['target_command'], 4)
+  else:
+    fuzzer.map_commands()
+
